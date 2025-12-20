@@ -1,7 +1,7 @@
-import { TransactionType } from '../enums/transaction-type.enum';
-import { Provider } from '../enums/provider.enum';
-import { EventStatus } from '../enums/event-status.enum';
-import { EventOrigin } from '../enums/event-origin.enum';
+import { type EventOrigin } from '../enums/event-origin.enum';
+import { type EventStatus } from '../enums/event-status.enum';
+import { type Provider } from '../enums/provider.enum';
+import { type TransactionType } from '../enums/transaction-type.enum';
 
 export interface NormalizedEvent {
   userId: string;

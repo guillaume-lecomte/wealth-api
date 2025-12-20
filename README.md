@@ -5,21 +5,6 @@ L’objectif est de tester la logique de traitement, de normalisation et de réc
 
 ---
 
-## Objectifs fonctionnels
-
-- Recevoir des évènements financiers provenant de plusieurs providers externes (banque, crypto, assurance).  
-- Normaliser ces évènements dans un format interne unique.  
-- Gérer :
-  - les doublons (idempotence),
-  - les évènements contradictoires (réconciliation via ajustements),
-  - les évènements en retard (prise en compte de la date métier).  
-- Exposer une API permettant :
-  - de consulter le solde global du patrimoine d’un utilisateur,
-  - de consulter le détail par compte,
-  - de récupérer la timeline consolidée des opérations.
-
----
-
 ## Architecture technique
 
 ### Vue d’ensemble
@@ -108,12 +93,10 @@ Champs principaux d’un `NormalizedEvent` :
 ou
 `yarn install`
 
-Créer un fichier `.env` à la racine :
+Créer un fichier `.env` à la racine en copiant le contenu du .env.example
 
-MONGO_URL=mongodb://localhost:27017
-DB_NAME=wealth_tracker
-CORS_ORIGINS=http://localhost:3000
-PORT=3000
+### Base de données
+`docker-compose up -d`
 
 ### Lancement en développement
 

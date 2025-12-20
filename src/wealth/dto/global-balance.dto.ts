@@ -1,4 +1,4 @@
-import { AccountBalanceDto } from './account-balance.dto';
+import { type AccountBalanceDto } from './account-balance.dto';
 
 export interface GlobalBalanceDto {
   totalBalanceEUR: number;

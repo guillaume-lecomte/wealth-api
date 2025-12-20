@@ -1,11 +1,12 @@
 import { Body, Controller, Get, Post, Query } from '@nestjs/common';
-import { WealthService } from './wealth.service';
+
+import { type AccountBalanceDto } from './dto/account-balance.dto';
 import { BankEventDto } from './dto/bank-event.dto';
 import { CryptoEventDto } from './dto/crypto-event.dto';
+import { type GlobalBalanceDto } from './dto/global-balance.dto';
 import { InsuranceEventDto } from './dto/insurance-event.dto';
-import { GlobalBalanceDto } from './dto/global-balance.dto';
-import { AccountBalanceDto } from './dto/account-balance.dto';
-import { TimelineEventDto } from './dto/timeline-event.dto';
+import { type TimelineEventDto } from './dto/timeline-event.dto';
+import { WealthService } from './wealth.service';
 
 @Controller('api')
 export class WealthController {

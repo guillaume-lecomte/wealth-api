@@ -1,4 +1,4 @@
-import { WebhookStatus } from '../enums/webhook-status.enum';
+import { type WebhookStatus } from '../enums/webhook-status.enum';
 
 export type WebhookResult =
   | { status: WebhookStatus.SUCCESS; message: string; transactionId: string }
