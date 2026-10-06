@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
-import { MongoProvider } from './common/mongo.provider';
+import { MongoModule } from './common/mongo.module';
 import { WealthModule } from './wealth/wealth.module';
 
 @Module({
@@ -10,9 +10,8 @@ import { WealthModule } from './wealth/wealth.module';
       isGlobal: true,
       envFilePath: '.env',
     }),
+    MongoModule,
     WealthModule,
   ],
-  providers: [MongoProvider],
-  exports: [MongoProvider],
 })
 export class AppModule {}

@@ -14,19 +14,20 @@ When an event arrives, the service looks for an existing one with the same `(use
 
 - none found: the event is inserted;
 - found, same amount and type: the delivery is ignored and reported as `duplicate`;
-- found, different amount or type: the original is left untouched and a second event of origin `adjustment` is added for the difference. The response is `adjusted`.
+- found, different amount or type: the original is left untouched and an event of origin `adjustment` is added for the difference between the amount received and what is already recorded (the original plus its earlier adjustments). The response is `adjusted`. A redelivery of the same correction finds nothing left to adjust and is a `duplicate`. When corrections contradict each other, the last delivery wins.
 
 Balances and the timeline are computed at read time from the journal. The timeline is ordered by business date, so late events land where they belong.
 
-Trade-offs accepted for a prototype: every read loads all the events of a user (no snapshot collection), there is no currency conversion, and there is no authentication.
+A unique index on `(userId, provider, transactionId)`, created at startup, makes the duplicate check hold when two deliveries arrive at the same time. Trade-offs accepted for a prototype: every read loads all the events of a user (no snapshot collection), there is no currency conversion, and there is no authentication.
 
 ## Engineering highlights
 
 - **One model for three formats.** Bank, crypto and insurance payloads each have a DTO and a normaliser that outputs the same `NormalizedEvent`. See [`wealth.service.ts`](src/wealth/wealth.service.ts) (`normalizeBankEvent`, `normalizeCryptoEvent`, `normalizeInsuranceEvent`) and [`normalized-event.dto.ts`](src/wealth/dto/normalized-event.dto.ts).
-- **Duplicate detection.** A replayed event with the same effect is recognised and answered with `duplicate`. See `findExistingEvent` and `storeNormalizedEvent` in [`wealth.service.ts`](src/wealth/wealth.service.ts).
-- **Append-only corrections.** A contradictory event produces an `adjustment` event instead of an update, and keeps the previous and new payloads in `rawData`. See `createAdjustmentEvent` in [`wealth.service.ts`](src/wealth/wealth.service.ts). The replay behaviour is a known issue, see below.
-- **Business date, not ingestion date.** `timestamp` holds the transaction date and the timeline sorts on it. [`date.helper.ts`](src/wealth/helpers/date.helper.ts) parses ISO strings, several day-first and month-first formats, and Unix timestamps in seconds or milliseconds.
+- **Duplicate detection.** A replayed event with the same effect is recognised and answered with `duplicate`, and the unique index settles simultaneous deliveries (MongoDB error 11000 is read as a duplicate). See `findExistingEvent` and `storeNormalizedEvent` in [`wealth.service.ts`](src/wealth/wealth.service.ts) and `ensureIndexes` in [`mongo.provider.ts`](src/common/mongo.provider.ts).
+- **Append-only corrections.** A contradictory event produces an `adjustment` event instead of an update, and keeps the previous and new payloads in `rawData`. Adjustment ids are numbered per event (`BANK-T1-adjustment-1`, `-2`, ...), so a redelivery cannot add another one. See `createAdjustmentEvent` and `findAdjustments` in [`wealth.service.ts`](src/wealth/wealth.service.ts).
+- **Business date, not ingestion date.** `timestamp` holds the transaction date and the timeline sorts on it. [`date.helper.ts`](src/wealth/helpers/date.helper.ts) parses ISO strings, several day-first and month-first formats, and Unix timestamps in seconds or milliseconds. A date it cannot read falls back to the current time, with a warning in the log.
 - **Validated input.** DTOs use `class-validator` and a global `ValidationPipe` strips unknown fields. See [`main.ts`](src/main.ts) and [`src/wealth/dto`](src/wealth/dto).
+- **Tests without a database.** The service and the HTTP layer are tested against an in-memory stand-in for the collection that also enforces the unique index. See [`fake-collection.ts`](test/support/fake-collection.ts), [`wealth.service.spec.ts`](src/wealth/wealth.service.spec.ts) and [`app.e2e-spec.ts`](test/app.e2e-spec.ts).
 - **Bounded reads.** The timeline accepts a `limit` between 1 and 1000. See `getTimeline` in [`wealth.service.ts`](src/wealth/wealth.service.ts).
 
 ## Architecture
@@ -47,7 +48,7 @@ All events, external and adjustments, live in one collection, `normalized_events
 | --- | --- | --- |
 | POST | `/api/webhooks/bank` | Bank transaction (`credit` or `debit`) |
 | POST | `/api/webhooks/crypto` | Crypto transaction (`deposit` or `withdrawal`), valued at the `fiatValue` sent |
-| POST | `/api/webhooks/insurance` | Insurance movement, always recorded as an outflow |
+| POST | `/api/webhooks/insurance` | Insurance movement: `payout` is an inflow, any other `movementType` (premium, fee) an outflow |
 | GET | `/api/wealth/balance?userId=` | Total and per-account balances |
 | GET | `/api/wealth/accounts?userId=` | Per-account balances |
 | GET | `/api/wealth/timeline?userId=&limit=` | Events by business date, newest first. `limit` defaults to 100, maximum 1000 |
@@ -78,31 +79,33 @@ git clone https://github.com/guillaume-lecomte/wealth-api
 cd wealth-api
 npm ci
 npm run build
+npm test
+npm run test:e2e
 cp .env.example .env
 docker compose up -d
 npm run start:dev
 ```
 
-The API listens on `http://localhost:3000` (`PORT` in `.env`). `CORS_ORIGINS` must be set, the server fails at startup without it.
+The API listens on `http://localhost:3000` (`PORT` in `.env`). `CORS_ORIGINS` is a comma-separated list of allowed origins, or `*`. When it is unset, cross-origin requests are refused.
 
-Verified on 2026-10-06: `npm ci` and `npm run build` succeed. Not run: `docker compose up -d` and the server itself, because the environment used for this README had neither Docker nor MongoDB. The duplicate, adjustment and invalid-date behaviours described on this page were checked by running the compiled service against an in-memory stand-in for the collection, not against MongoDB.
+At startup the application creates the unique index on `normalized_events`. That fails on a collection that already holds duplicate `(userId, provider, transactionId)` entries, which have to be removed first.
+
+Verified on 2026-10-06: `npm ci`, `npm run build`, `npm test` (17 tests) and `npm run test:e2e` (5 tests) succeed. These tests use an in-memory stand-in for the collection, not MongoDB. Not run: `docker compose up -d` and the server against a real MongoDB, because the environment used for this README had neither Docker nor MongoDB. The index creation, in particular, was checked with a mocked client only.
 
 ## Status
 
-Prototype. Last code change 2025-12-20. Not maintained.
+Prototype. Last code change 2026-10-06. Not maintained.
 
 ## Known issues
 
-- **No automated tests.** `test/app.e2e-spec.ts` is the unmodified NestJS scaffold: it expects `Hello World!` on `/` and `npm run test:e2e` fails. There are no unit tests.
-- **Idempotency relies on an index that is never created.** The code handles MongoDB duplicate-key error 11000 on insert (`storeNormalizedEvent`), but nothing in the repository creates a unique index, and `docker-compose.yml` mounts a `./mongo-init` directory that is not in the repository. Without a unique index, two simultaneous deliveries of the same event can both be inserted. This is read from the code and was not run against MongoDB.
-- **A replayed contradictory event adds another adjustment each time.** The adjustment id contains `Date.now()` and nothing checks for an equivalent adjustment, so the balance drifts on every redelivery. Reproduced against the in-memory stand-in: a credit of 100 corrected to 150 gave one adjustment of 50; delivering the same correction again gave a second adjustment of 50 and a balance of 200 instead of 150.
-- **An unparseable date returns a 500.** `parseDate` is called without a logger and calls `logger.warn` on its fallback paths, which throws a `TypeError`. `"not-a-date"` and `""` both fail; ISO strings, `dd/MM/yyyy` and Unix timestamps parse.
-- **Insurance movements are always negative**, whatever `movementType` says. Payouts are recorded as outflows.
-- **Balances mix currencies.** Amounts are added as they are and reported as `totalBalanceEUR`.
+- **Not run against a real MongoDB.** See Getting started. The unique index and the 11000 handling are covered by tests only through the in-memory stand-in.
+- **`docker-compose.yml` mounts `./mongo-init`**, a directory that is not in the repository.
+- **Balances mix currencies.** Amounts are added as they are and reported as `totalBalanceEUR`. There is no conversion.
 - **All of a user's events are loaded in memory** to compute a balance.
-- **Startup details.** An unset `CORS_ORIGINS` crashes `main.ts`, the MongoDB connection string (credentials included) is written to the log at startup, and `MongoProvider` is registered in both `AppModule` and `WealthModule`, which creates two clients.
-- **Dependencies.** `npm audit --omit=dev` on 2026-10-06 reports 13 advisories (1 critical, 5 high), mostly through NestJS 10 and Express 4.
-- **Lint.** `npm run lint` reports 1 error and 71 warnings (2026-10-06). The error is that `.eslintrc.js` is not covered by the TypeScript project.
+- **The last delivery wins.** A stale redelivery of an older version of an event is read as a new correction and adjusts the balance back.
+- **No authentication**, and `userId` is a query parameter.
+- **Dependencies.** `npm audit --omit=dev` on 2026-10-06 reports 7 advisories (1 low, 4 moderate, 2 high). The remaining fixes need the NestJS 12 upgrade, which is a breaking change.
+- **Lint.** `npm run lint` reports 0 errors and 93 warnings (2026-10-06), mostly the `import/*` resolver and naming-convention rules.
 
 ## License
 

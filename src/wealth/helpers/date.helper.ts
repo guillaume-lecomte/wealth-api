@@ -15,7 +15,7 @@ export function parseDate(
 ): Date {
   if (dateInput instanceof Date) {
     if (!isValid(dateInput)) {
-      logger.warn(`Invalid Date object provided, using current date`);
+      logger?.warn(`Invalid Date object provided, using current date`);
       return new Date();
     }
     return dateInput;
@@ -29,7 +29,7 @@ export function parseDate(
     return parseStringDate(dateInput.trim(), logger);
   }
 
-  logger.warn(
+  logger?.warn(
     `Unexpected date input type: ${typeof dateInput}, using current date`,
   );
   return new Date();
@@ -37,7 +37,7 @@ export function parseDate(
 
 function parseTimestamp(timestamp: number, logger?: Logger): Date {
   if (!Number.isFinite(timestamp) || timestamp < 0) {
-    logger.warn(`Invalid timestamp: ${timestamp}, using current date`);
+    logger?.warn(`Invalid timestamp: ${timestamp}, using current date`);
     return new Date();
   }
 
@@ -52,7 +52,7 @@ function parseTimestamp(timestamp: number, logger?: Logger): Date {
   }
 
   if (!isValid(parsed)) {
-    logger.warn(`Could not parse timestamp: ${timestamp}, using current date`);
+    logger?.warn(`Could not parse timestamp: ${timestamp}, using current date`);
     return new Date();
   }
 
@@ -60,7 +60,7 @@ function parseTimestamp(timestamp: number, logger?: Logger): Date {
   const maxDate = startOfYear(new Date('2100-01-01'));
 
   if (isBefore(parsed, minDate) || isAfter(parsed, maxDate)) {
-    logger.warn(
+    logger?.warn(
       `Timestamp ${timestamp} results in unrealistic date: ${parsed.toISOString()}, using current date`,
     );
     return new Date();
@@ -71,7 +71,7 @@ function parseTimestamp(timestamp: number, logger?: Logger): Date {
 
 function parseStringDate(dateString: string, logger?: Logger): Date {
   if (!dateString) {
-    logger.warn('Empty date string provided, using current date');
+    logger?.warn('Empty date string provided, using current date');
     return new Date();
   }
 
@@ -104,13 +104,13 @@ function parseStringDate(dateString: string, logger?: Logger): Date {
 
   parsed = new Date(dateString);
   if (isValid(parsed)) {
-    logger.warn(
+    logger?.warn(
       `Date string "${dateString}" parsed with native Date constructor (ambiguous format)`,
     );
     return parsed;
   }
 
-  logger.warn(
+  logger?.warn(
     `Could not parse date string: "${dateString}", using current date`,
   );
   return new Date();

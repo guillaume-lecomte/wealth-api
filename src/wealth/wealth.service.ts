@@ -34,6 +34,10 @@ const DEFAULT_USER_ID = 'user-001';
 const DEFAULT_TIMELINE_LIMIT = 100;
 const MAX_TIMELINE_LIMIT = 1000;
 const DECIMAL_PRECISION = 100; // Pour arrondir à 2 décimales
+const ADJUSTMENT_SUFFIX = '-adjustment-';
+
+const escapeRegExp = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 @Injectable()
 export class WealthService {
@@ -80,7 +84,7 @@ export class WealthService {
       provider: Provider.BANK,
       providerId: event.bankId,
       transactionId: `${event.bankId}-${event.txnId}`,
-      timestamp: parseDate(event.date),
+      timestamp: parseDate(event.date, this.logger),
       transactionType,
       amount: isCredit ? event.amount : -event.amount,
       currency: event.currency || DEFAULT_CURRENCY,
@@ -109,7 +113,7 @@ export class WealthService {
       provider: Provider.CRYPTO,
       providerId: event.platform,
       transactionId: `${event.platform}-${event.id}`,
-      timestamp: parseDate(event.time),
+      timestamp: parseDate(event.time, this.logger),
       transactionType,
       amount: isDeposit ? event.fiatValue : -event.fiatValue,
       currency: event.currency || DEFAULT_CURRENCY,
@@ -128,14 +132,20 @@ export class WealthService {
   }
 
   private normalizeInsuranceEvent(event: InsuranceEventDto): NormalizedEvent {
+    // A payout is money coming back to the user, every other movement
+    // (premium, fee...) is an outflow.
+    const isPayout = event.movementType?.toLowerCase() === 'payout';
+
     const base: Omit<NormalizedEvent, 'groupKey'> = {
       userId: event.userId,
       provider: Provider.INSURANCE,
       providerId: event.insurer,
       transactionId: `${event.insurer}-${event.transactionId}`,
-      timestamp: parseDate(event.timestamp),
-      transactionType: TransactionType.PREMIUM,
-      amount: -event.amount,
+      timestamp: parseDate(event.timestamp, this.logger),
+      transactionType: isPayout
+        ? TransactionType.PAYOUT
+        : TransactionType.PREMIUM,
+      amount: isPayout ? event.amount : -event.amount,
       currency: event.currency || DEFAULT_CURRENCY,
       accountId: event.policyNumber || 'unknown-policy',
       description: `${event.movementType} payment`,
@@ -174,12 +184,16 @@ export class WealthService {
     event: NormalizedEvent,
     existing: NormalizedEventDocument,
     diff: number,
+    sequence: number,
   ): NormalizedEvent {
     return {
       userId: event.userId,
       provider: event.provider,
       providerId: event.providerId,
-      transactionId: `${event.transactionId}-adjustment-${Date.now()}`,
+      // The id depends on how many corrections the event already has, not on
+      // the clock: a redelivery computes the same id and is refused by the
+      // unique index instead of adding one more adjustment.
+      transactionId: `${event.transactionId}${ADJUSTMENT_SUFFIX}${sequence}`,
       timestamp: new Date(),
       transactionType:
         diff >= 0 ? TransactionType.DEPOSIT : TransactionType.WITHDRAWAL,
@@ -193,6 +207,35 @@ export class WealthService {
       origin: EventOrigin.ADJUSTMENT,
       groupKey: event.groupKey,
     };
+  }
+
+  /**
+   * Adjustments already recorded for an external event, oldest first.
+   */
+  private async findAdjustments(
+    event: NormalizedEvent,
+  ): Promise<NormalizedEventDocument[]> {
+    try {
+      return await this.eventsCollection
+        .find(
+          {
+            userId: event.userId,
+            provider: event.provider,
+            origin: EventOrigin.ADJUSTMENT,
+            transactionId: {
+              $regex: `^${escapeRegExp(event.transactionId)}${ADJUSTMENT_SUFFIX}`,
+            },
+          },
+          { projection: { _id: 0 } },
+        )
+        .toArray();
+    } catch (error) {
+      this.logger.error(
+        `Error finding adjustments: ${event.transactionId}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      throw new InternalServerErrorException('Database query failed');
+    }
   }
 
   private async storeNormalizedEvent(
@@ -221,36 +264,45 @@ export class WealthService {
       }
     }
 
-    // Cas 2 : Même effet métier → doublon pur (idempotence)
-    const sameAmount = existing.amount === event.amount;
-    const sameType = existing.transactionType === event.transactionType;
+    // Cas 2 : l'effet déjà enregistré pour cet événement est son montant
+    // d'origine plus les ajustements déjà passés. S'il est égal à celui
+    // reçu, c'est une redite (idempotence).
+    const adjustments = await this.findAdjustments(event);
+    const recordedAmount = adjustments.reduce(
+      (sum, adjustment) => this.roundAmount(sum + adjustment.amount),
+      existing.amount,
+    );
+    const diff = this.roundAmount(event.amount - recordedAmount);
 
-    if (sameAmount && sameType) {
+    if (diff === 0) {
       return { stored: false, duplicate: true };
     }
 
-    // Cas 3 : Contradiction → création d'un événement d'ajustement
-    const diff = this.roundAmount(event.amount - existing.amount);
+    // Cas 3 : contradiction → création d'un événement d'ajustement
+    const adjustment = this.createAdjustmentEvent(
+      event,
+      existing,
+      diff,
+      adjustments.length + 1,
+    );
 
-    if (diff !== 0) {
-      const adjustment = this.createAdjustmentEvent(event, existing, diff);
-
-      try {
-        await this.eventsCollection.insertOne(this.toDocument(adjustment));
-        this.logger.warn(
-          `Adjustment created for ${event.transactionId}: diff=${diff}`,
-        );
-        return { stored: false, duplicate: false, adjustmentCreated: true };
-      } catch (error) {
-        this.logger.error(
-          `Failed to create adjustment for ${event.transactionId}`,
-          error instanceof Error ? error.stack : String(error),
-        );
-        throw new InternalServerErrorException('Adjustment creation failed');
+    try {
+      await this.eventsCollection.insertOne(this.toDocument(adjustment));
+      this.logger.warn(
+        `Adjustment created for ${event.transactionId}: diff=${diff}`,
+      );
+      return { stored: false, duplicate: false, adjustmentCreated: true };
+    } catch (error) {
+      if (error instanceof MongoError && error.code === 11000) {
+        // Le même ajustement vient d'être créé par une requête concurrente
+        return { stored: false, duplicate: true };
       }
+      this.logger.error(
+        `Failed to create adjustment for ${event.transactionId}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      throw new InternalServerErrorException('Adjustment creation failed');
     }
-
-    return { stored: false, duplicate: true };
   }
 
   private async processEvent(
