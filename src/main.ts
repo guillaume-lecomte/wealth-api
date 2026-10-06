@@ -14,12 +14,14 @@ async function bootstrap() {
     }),
   );
 
-  const origins = process.env.CORS_ORIGINS.split(',').map((o) => o.trim()) || [
-    '*',
-  ];
+  // CORS_ORIGINS is a comma-separated list, or "*". Unset means no cross-origin access.
+  const origins = (process.env.CORS_ORIGINS ?? '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
 
   app.enableCors({
-    origin: origins.includes('*') ? true : origins,
+    origin: origins.includes('*') ? true : origins.length > 0 ? origins : false,
     credentials: true,
     methods: '*',
     allowedHeaders: '*',
